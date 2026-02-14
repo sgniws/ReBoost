@@ -466,30 +466,227 @@ epsilon_all = dice_bce(combined_logits, labels, weight=channel_weights)
 
 ---
 
+## 补充分析：禁用 ACA 后 Boost 仍不等于 Baseline
+
+> 背景：将 `ACA_CHECK_INTERVAL` 设为 300（即整个训练过程不触发 ACA），此时 `n_heads=[1,1,1,1]` 始终不变。理论上 Boost 应退化为 Baseline，但实验表明二者表现差距显著。
+> 
+> 对比日志：
+> - Baseline: `saved_models/baseline/training_2026-02-15_00-11-54.log`
+> - Boost (无ACA): `saved_models/boosted/training_2026-02-15_06-21-54.log`
+
+### S1. 关键指标对比
+
+| 指标 | Baseline Epoch 5 | Boost(无ACA) Epoch 5 |
+|------|-----------------|---------------------|
+| task_loss | 1.0240 | **3.8802** |
+| val_dice | 0.6316 | **0.0000** |
+| WT/TC/ET | 0.8207/0.5699/0.4439 | **0.0000/0.0000/0.0000** |
+
+| 指标 | Baseline Epoch 50 | Boost(无ACA) Epoch 50 |
+|------|------------------|----------------------|
+| task_loss | 0.2473 | **2.1224** |
+| val_dice | **0.8273** | 0.7018 |
+| WT/TC/ET | **0.9040/0.8248/0.7294** | 0.8586/0.6914/0.5048 |
+
+| 指标 | Baseline 梯度主导模态 | Boost(无ACA) 梯度主导模态 |
+|------|---------------------|--------------------------|
+| Epoch 1 | T2 (45.3%) | **T1 (27.8%)** → 快速升至 T1 |
+| Epoch 15 | T1ce (37.8%) | **T1 (60.3%)** |
+| Epoch 50 | T1ce (49.2%) | **T1 (53.1%)** |
+
+即使没有 ACA 添加任何 head，Boost 仍然存在三大差异：**损失量级偏大**、**训练收敛显著变慢**、**梯度主导模态反转**。
+
+### S2. 差异根因分析
+
+#### 根因 1：损失函数结构不同（最关键）
+
+当 `n_heads=1` 时，`SustainedBoostingLoss` 对每个模态计算：
+
+| 损失项 | 计算方式 | 值 |
+|--------|---------|-----|
+| ε (残差损失) | `BCE(sigmoid(logits_m), labels)` | ≈ BCE per modality |
+| ε_all (联合预测损失) | `DiceBCE(logits_m, labels) = Dice + BCE` | ≈ Dice + BCE per modality |
+| ε_pre (前序损失) | `0` (n_heads=1 时不存在) | 0 |
+| **模态小计** | **ε + ε_all = Dice + 2×BCE** | |
+
+而 Baseline 的损失是对**融合后的输出**计算一次：
+
+| 损失项 | 计算方式 |
+|--------|---------|
+| 总损失 | `DiceBCE(mean(4 modality logits), labels) = Dice + BCE` |
+
+**差异汇总**：
+
+```
+Boost 总损失 = Σ_{m=0}^{3} (Dice_m + 2 × BCE_m) = 4 × Dice + 8 × BCE    [对每个模态独立计算]
+Baseline 总损失 = Dice_fused + BCE_fused                                     [只对融合输出计算一次]
+```
+
+这导致了两个层面的差异：
+
+**(a) 量级差异（~6-8 倍）**：Boost 对 4 个模态分别计算损失再求和，加上每个模态多一个 BCE 项，总量级约为 Baseline 的 6-8 倍。这与日志中 Epoch 1 的 loss 比值（8.79 / 1.53 ≈ 5.7）吻合。
+
+**(b) 优化目标差异**：Baseline 优化的是**融合预测的质量**（mean 后的 logits vs labels），4 个模态的梯度通过 mean 操作相互耦合。Boost 优化的是**每个模态独立的预测质量**，4 个模态各自为战。这改变了梯度在模态间的分配方式，是梯度主导模态反转的根本原因。
+
+#### 根因 2：分割头架构不同
+
+| 特征 | Baseline | Boost |
+|------|----------|-------|
+| 分割头路径 | decoder_feat → `seg_layer` (Conv3d(8→3, k=1)) | decoder_feat → `private` (Conv3d(8→8, k=1) + ReLU) → `shared_head` (Conv3d(8→3, k=1)) |
+| 层数 | 1 层 | 2 层 + 1 个 ReLU |
+| 参数量 | 27 (8×3 + 3) | 75 (8×8+8) + 27 (8×3+3) = 102 |
+| 非线性 | 无（线性投影） | ReLU（引入非线性） |
+
+即使逻辑上 ConfigurableSegHead 应该与 seg_layer 等效，实际上：
+
+**(a) 多了 ReLU 非线性**：Baseline 的 seg_layer 是纯线性映射（Conv3d(8→3)），而 Boost 的路径经过了一个 ReLU。ReLU 会截断负值特征，改变信息流。
+
+**(b) 初始化不同**：两条路径的初始权重不同。Baseline 使用 UNet 构建时的默认 PyTorch 初始化，而 ConfigurableSegHead 有独立的初始化。
+
+**(c) UNet 的 seg_layers 成为死参数**：Boost 模型中每个 UNet 的 `seg_layers`（5 层 Conv3d）仍然存在于模型参数中，但在 forward 中其输出被丢弃（`_, decoder_feat = backbone(x_m, return_features=True)`），因此这些参数：
+- 不接收任何梯度（grad=None）
+- 但仍占用优化器的状态内存（Adam 的 m/v buffers）
+- 不影响训练正确性，但是多余的参数开销
+
+#### 根因 3：梯度主导模态反转的机制
+
+Baseline 中梯度从融合点（mean）向 4 个模态回传，梯度大小取决于**每个模态对融合预测误差的边际贡献**。T1ce 在 BraTS 中信息量最大，对融合误差的边际贡献最大，因此梯度最大。
+
+Boost 中每个模态独立计算 loss，梯度大小取决于**每个模态独立预测的误差**。T1 信息量最弱，独立预测误差最大，因此梯度最大。
+
+这正是"弱模态梯度大"的核心矛盾——在独立优化范式下，弱模态因为预测差而接收更大梯度，但更大梯度并不一定能帮助弱模态学得更好（可能过拟合噪声），反而通过 shared head 干扰强模态。
+
+### S3. 解决方案
+
+#### 方案 9：Boost 退化时等效于 Baseline（基础等效性修复）⭐ 最高优先级
+
+**目标**：确保 `n_heads=1` 且无 ACA 时，Boost 的行为与 Baseline 完全一致。这是正确实现 Boost 的前提。
+
+**修复内容**：
+
+**(9a) 损失函数退化**：当 `n_heads=1` 时，不计算额外的 ε 残差损失，只保留 ε_all：
+
+```python
+def forward(self, model_output, labels):
+    ...
+    for m_idx in range(n_modalities):
+        head_logits_list = modality_head_logits[m_idx]
+        n_heads = len(head_logits_list)
+        
+        combined_logits = torch.stack(head_logits_list, dim=0).sum(dim=0)
+        epsilon_all = self.dice_bce(combined_logits, labels)
+        
+        if n_heads > 1:
+            # 只有多个 head 时才计算残差损失和前序损失
+            residual_labels = self.compute_residual_labels(labels, head_logits_list)
+            newest_probs = torch.sigmoid(head_logits_list[-1])
+            epsilon = self.bce(newest_probs, residual_labels)
+            pre_logits = torch.stack(head_logits_list[:-1], dim=0).sum(dim=0)
+            epsilon_pre = self.dice_bce(pre_logits, labels)
+            modality_loss = epsilon + epsilon_all + epsilon_pre
+        else:
+            modality_loss = epsilon_all  # 退化为标准 DiceBCE
+        
+        total_loss = total_loss + modality_loss
+    
+    # 除以模态数，使总量级与 baseline 一致
+    total_loss = total_loss / n_modalities
+    ...
+```
+
+**(9b) 使用融合输出计算损失（替代方案）**：直接使用融合后的 output 计算 baseline loss，加上可选的 per-modality boost loss：
+
+```python
+# 始终计算融合损失（与 baseline 等效）
+fused_loss = self.dice_bce(model_output['output'], labels)
+
+# 只有当 n_heads > 1 的模态存在时，才添加 boost 辅助损失
+boost_loss = 0
+for m_idx in range(n_modalities):
+    if len(modality_head_logits[m_idx]) > 1:
+        boost_loss += compute_boost_loss(modality_head_logits[m_idx], labels)
+
+total_loss = fused_loss + lambda_boost * boost_loss
+```
+
+**(9c) 分割头架构对齐**：移除 ConfigurableSegHead 中的 ReLU 和中间层，使其与 Baseline 的 seg_layer 等效（仅在 `n_heads=1` 时）：
+
+方案一：初始 head 直接使用线性映射（与 baseline seg_layer 等效）
+```python
+class ConfigurableSegHead(nn.Module):
+    def __init__(self, in_channels, hidden_channels, use_nonlinearity=True):
+        super().__init__()
+        if use_nonlinearity:
+            self.private = nn.Sequential(
+                nn.Conv3d(in_channels, hidden_channels, 1, bias=True),
+                nn.ReLU(inplace=True),
+            )
+        else:
+            self.private = nn.Identity()  # 直接传递到 shared_head
+```
+
+方案二：保持当前架构但不影响等效性（如果 9a 的损失修复已足够，架构差异可接受）
+
+#### 方案 10：修正梯度主导模态反转
+
+**10a. 在 per-modality loss 前加上融合 loss 作为主损失**：
+
+```python
+total_loss = dice_bce(fused_output, labels)  # 主损失：与 baseline 一致
+for m_idx in range(n_modalities):
+    if n_heads[m_idx] > 1:
+        total_loss += boost_loss_m / n_modalities  # 辅助损失：仅对有多个 head 的模态
+```
+
+这样梯度仍然主要由融合 loss 驱动（T1ce 主导），boost 部分只是辅助。
+
+**10b. 对 per-modality loss 取平均而非求和**：
+
+```python
+total_loss = total_loss / n_modalities  # 已在方案 9a 中包含
+```
+
+---
+
 ## 四、建议的优先级排序
 
-| 优先级 | 方案 | 预期收益 | 实现难度 |
-|--------|------|---------|---------|
-| P0 | 方案 1：分离优化 | 高 | 中 |
-| P0 | 方案 2：损失归一化 | 高 | 低 |
-| P1 | 方案 4：保守 ACA | 中-高 | 低 |
-| P1 | 方案 5：新 Head 渐进引入 | 中 | 低 |
-| P2 | 方案 3：修改残差标签 | 中 | 低 |
-| P2 | 方案 7：两阶段训练 | 中 | 低 |
-| P3 | 方案 6：增大 Head 容量 | 低-中 | 低 |
-| P3 | 方案 8：ET 特殊处理 | 低-中 | 低 |
+| 优先级 | 方案 | 预期收益 | 实现难度 | 说明 |
+|--------|------|---------|---------|------|
+| **P0** | **方案 9：基础等效性修复** | **极高** | **低** | **最优先：确保 n_heads=1 时 Boost ≡ Baseline** |
+| P0 | 方案 2：损失归一化（已包含在方案 9 中） | 高 | 低 | 除以模态数 + n_heads=1 时去掉 ε |
+| P1 | 方案 10：融合 loss 为主 + boost 为辅 | 高 | 低 | 修正梯度主导模态反转 |
+| P1 | 方案 1：分离优化 | 高 | 中 | 遵循 AUG 官方的分离 backward |
+| P1 | 方案 4：保守 ACA | 中-高 | 低 | 增大阈值 + warm-up |
+| P2 | 方案 5：新 Head 渐进引入 | 中 | 低 | 零初始化或小学习率 |
+| P2 | 方案 3：修改残差标签 | 中 | 低 | sum-then-sigmoid |
+| P2 | 方案 7：两阶段训练 | 中 | 低 | 先 baseline 再 boost |
+| P3 | 方案 6：增大 Head 容量 | 低-中 | 低 | 增大 hidden_channels |
+| P3 | 方案 8：ET 特殊处理 | 低-中 | 低 | 通道级加权 |
 
-**建议首先实施 P0 级方案**（分离优化 + 损失归一化），这两个改动最可能从根本上解决当前问题。然后根据实验结果决定是否需要引入其他方案。
+**实施路径建议**：
+
+1. **第一步（P0）**：实施方案 9，修复基础等效性。验证 `n_heads=1, ACA_CHECK_INTERVAL=300` 时 Boost 的训练曲线与 Baseline 一致。这是所有后续工作的基础。
+
+2. **第二步（P1）**：在等效性修复的基础上，开启 ACA 和多 head 训练，同时实施方案 10（融合 loss 为主）和方案 4（保守 ACA）。
+
+3. **第三步（P2-P3）**：根据第二步结果调整残差计算、head 引入策略等细节。
 
 ---
 
 ## 五、总结
 
-当前 Boost 实现的核心问题不在于方法设计思路（Sustained Boosting + ACA 的迁移方向是正确的），而在于几个关键实现细节与论文原始方法的偏差：
+当前 Boost 实现存在**两个层次**的问题：
 
-1. **联合优化 vs 分离优化**是最关键的差异，直接影响论文理论保证的适用性
-2. **损失量级**过大导致训练初期不稳定
-3. **ACA 策略过于敏感**导致频繁添加 head，引发训练震荡
-4. **新 Head 的引入方式**过于激进，随机初始化的权重以全学习率立即参与训练
+### 基础层（必须首先解决）
+即使完全禁用 ACA（`ACA_CHECK_INTERVAL=300`），Boost 也无法等效于 Baseline。根因是：
+1. **损失结构不同**：`n_heads=1` 时多了一个冗余的 ε 残差损失项（此时 ε ≈ BCE(logits, labels)），加上 4 模态独立计算并求和，导致总 loss 约为 Baseline 的 6-8 倍
+2. **优化目标不同**：Baseline 优化融合后的预测质量，Boost 优化每个模态独立的预测质量，导致梯度分配完全不同（T1ce 主导 → T1 主导）
+3. **分割头架构不同**：多了一层 Conv3d + ReLU 非线性
 
-这些问题叠加在一起，导致了训练初期 Dice 为 0、梯度失衡、以及 ET 下跌等现象。通过逐步修正这些差异，Boost 方法有望在 BraTS2018 分割任务上发挥预期的平衡模态能力的效果。
+### 方法层（在基础层修复后再处理）
+Boost 方法本身的迁移问题：
+1. **联合优化 vs 分离优化**与论文假设不匹配
+2. **ACA 策略过于敏感**导致频繁添加 head 引发震荡
+3. **新 Head 引入方式过于激进**
+
+**建议实施路径**：先修复基础等效性（方案 9），验证 Boost 在 `n_heads=1` 时能复现 Baseline 表现；再在此基础上逐步引入 ACA 和 Sustained Boosting 的功能。

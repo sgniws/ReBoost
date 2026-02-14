@@ -13,7 +13,7 @@ class BoostedConfig:
     # ACA
     ACA_SIGMA = 1.0
     ACA_TAU = 0.01
-    ACA_CHECK_INTERVAL = 30
+    ACA_CHECK_INTERVAL = 300
 
     # Training (aligned with baseline)
     RANDOM_SEED = 12345
