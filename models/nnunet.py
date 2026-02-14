@@ -114,7 +114,7 @@ class UNet(nn.Module):
         self.decoder_stages = nn.ModuleList(stages)
         self.seg_layers = nn.ModuleList(seg_layers)
 
-    def forward(self, x):
+    def forward(self, x, return_features=False):
         encoded_feat_maps = []
         for stage in self.encoder_stages:
             x = stage(x)
@@ -140,6 +140,8 @@ class UNet(nn.Module):
         else:
             outputs = outputs[0]
 
+        if return_features:
+            return outputs, low_res_input
         return outputs
 
 
