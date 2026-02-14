@@ -3,3 +3,6 @@ references/
 
 # 保存的模型和日志
 saved_models/
+
+__pycache__/
+.cursor/
