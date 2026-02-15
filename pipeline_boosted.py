@@ -82,7 +82,10 @@ def main():
         num_workers=4,
     )
 
-    loss_fn = SustainedBoostingLoss(lambda_smooth=BoostedConfig.LAMBDA_SMOOTH)
+    loss_fn = SustainedBoostingLoss(
+        lambda_smooth=BoostedConfig.LAMBDA_SMOOTH,
+        lambda_boost=BoostedConfig.LAMBDA_BOOST,
+    )
     optimizer = torch.optim.Adam(model.parameters(), lr=BoostedConfig.LEARNING_RATE)
 
     aca = AdaptiveClassifierAssignment(

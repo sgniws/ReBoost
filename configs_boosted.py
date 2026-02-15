@@ -7,6 +7,7 @@ class BoostedConfig:
 
     # Sustained Boosting
     LAMBDA_SMOOTH = 0.33
+    LAMBDA_BOOST = 1.0
     HEAD_HIDDEN_CHANNELS = 8
     MAX_HEADS_PER_MODALITY = 10
 

@@ -8,12 +8,20 @@ from models.nnunet import UNet
 class ConfigurableSegHead(nn.Module):
     """Configurable segmentation head — corresponds to paper's Configurable Classifier."""
 
-    def __init__(self, in_channels: int, hidden_channels: int):
+    def __init__(
+        self,
+        in_channels: int,
+        hidden_channels: int,
+        use_nonlinearity: bool = True,
+    ):
         super().__init__()
-        self.private = nn.Sequential(
-            nn.Conv3d(in_channels, hidden_channels, kernel_size=1, bias=True),
-            nn.ReLU(inplace=True),
-        )
+        if use_nonlinearity:
+            self.private = nn.Sequential(
+                nn.Conv3d(in_channels, hidden_channels, kernel_size=1, bias=True),
+                nn.ReLU(inplace=True),
+            )
+        else:
+            self.private = nn.Identity()
 
     def forward(self, features: torch.Tensor, shared_head: nn.Module) -> torch.Tensor:
         """
@@ -77,10 +85,14 @@ class BoostedLateFusion(nn.Module):
 
         # Decoder last stage output channels = n_features_per_stage[0] = 8
         feat_channels = n_features_per_stage[0]
-        # One head per modality at init
+        # One head per modality at init (linear path for n_heads=1 baseline equivalence)
         self.modality_heads = nn.ModuleList([
             nn.ModuleList([
-                ConfigurableSegHead(in_channels=feat_channels, hidden_channels=head_hidden_channels)
+                ConfigurableSegHead(
+                    in_channels=feat_channels,
+                    hidden_channels=head_hidden_channels,
+                    use_nonlinearity=False,
+                )
             ])
             for _ in range(n_experts)
         ])
@@ -93,6 +105,7 @@ class BoostedLateFusion(nn.Module):
         new_head = ConfigurableSegHead(
             in_channels=feat_channels,
             hidden_channels=self.head_hidden_channels,
+            use_nonlinearity=True,
         )
         device = next(self.parameters()).device
         new_head = new_head.to(device)
