@@ -14,11 +14,11 @@ class BoostedConfig:
     # ACA
     ACA_SIGMA = 1.0
     ACA_TAU = 0.01
-    ACA_CHECK_INTERVAL = 300
+    ACA_CHECK_INTERVAL = 60
 
     # Training (aligned with baseline)
     RANDOM_SEED = 12345
-    N_EPOCHS = 300
+    N_EPOCHS = 1000
     LEARNING_RATE = 0.001
     BATCH_SIZE = 4
     VAL_BATCH_SIZE = 8

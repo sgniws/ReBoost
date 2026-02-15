@@ -20,7 +20,7 @@ class DatasetConfig:
         [1, 2], [1, 3], [2, 3],
         [0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]
     ]
-    FOLD = 0
+    FOLD = 2    # cross-validation fold 2
 
 
 class TrainingConfig:
