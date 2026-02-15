@@ -9,7 +9,7 @@ class BoostedConfig:
     LAMBDA_SMOOTH = 0.33
     LAMBDA_BOOST = 1.0
     HEAD_HIDDEN_CHANNELS = 8
-    MAX_HEADS_PER_MODALITY = 8
+    MAX_HEADS_PER_MODALITY = 6
 
     # ACA
     ACA_SIGMA = 1.0
@@ -18,7 +18,7 @@ class BoostedConfig:
 
     # Training (aligned with baseline)
     RANDOM_SEED = 12345
-    N_EPOCHS = 500
+    N_EPOCHS = 400
     LEARNING_RATE = 0.001
     BATCH_SIZE = 4
     VAL_BATCH_SIZE = 8

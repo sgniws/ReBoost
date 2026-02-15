@@ -20,12 +20,12 @@ class DatasetConfig:
         [1, 2], [1, 3], [2, 3],
         [0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]
     ]
-    FOLD = 2    # cross-validation fold 2
+    FOLD = 1    # cross-validation fold 1
 
 
 class TrainingConfig:
     RANDOM_SEED = 12345
-    N_EPOCHS = 500
+    N_EPOCHS = 400
     LEARNING_RATE = 0.001
     BATCH_SIZE = 4
     VAL_BATCH_SIZE = 8

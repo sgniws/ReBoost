@@ -7,7 +7,7 @@ from tqdm import tqdm
 import torch
 from copy import deepcopy
 import json
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable
 from torch.utils.data import DataLoader
 
 
@@ -305,6 +305,7 @@ def train_model(
     eval_mode='min',
     monitor_modality_grad=False,
     aca: Optional[AdaptiveClassifierAssignment] = None,
+    log_callback: Optional[Callable[[int, Dict, Optional[Dict]], None]] = None,
 ):
     if not os.path.exists(results_dir):
         os.makedirs(results_dir)
@@ -378,6 +379,9 @@ def train_model(
         with open(log_path, 'a') as log_f:
             log_f.write(line + '\n')
             log_f.flush()
+
+        if did_val and val_log is not None and log_callback is not None:
+            log_callback(epoch, train_log, val_log)
 
         if did_val:
             arr_scores = history[monitor]
