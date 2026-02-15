@@ -25,7 +25,7 @@ class DatasetConfig:
 
 class TrainingConfig:
     RANDOM_SEED = 12345
-    N_EPOCHS = 300
+    N_EPOCHS = 500
     LEARNING_RATE = 0.001
     BATCH_SIZE = 4
     VAL_BATCH_SIZE = 8
