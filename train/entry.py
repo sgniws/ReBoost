@@ -50,6 +50,7 @@ def parse_args():
     parser.add_argument('--aca_sigma', type=float, default=BoostedConfig.ACA_SIGMA)
     parser.add_argument('--aca_tau', type=float, default=BoostedConfig.ACA_TAU)
     parser.add_argument('--aca_check_interval', type=int, default=BoostedConfig.ACA_CHECK_INTERVAL)
+    parser.add_argument('--no_aca', action='store_true', help='Disable ACA (no extra heads).')
     args = parser.parse_args()
     if args.quick_test:
         args.epochs = 2
@@ -255,7 +256,7 @@ def run_boosted(args):
         lambda_boost=args.lambda_boost,
     )
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    aca = AdaptiveClassifierAssignment(
+    aca = None if getattr(args, 'no_aca', False) else AdaptiveClassifierAssignment(
         sigma=args.aca_sigma,
         tau=args.aca_tau,
         check_interval_epochs=args.aca_check_interval,
