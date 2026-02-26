@@ -8,3 +8,17 @@ __pycache__/
 .cursor/
 
 wandb/
+
+/figure_src
+/scripts
+
+analysis_log.md
+analysis_solutions.md
+method_draft_en.md
+module_diagram_spec.md
+pipeline_OGM.py
+project_report.md
+sweep_boosted_grid.yaml
+SWEEP_README.md
+sweep_train.py
+transfer-plan.md
